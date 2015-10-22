@@ -2,20 +2,29 @@
 
 import Foundation
 
-enum RomType: String {
-    case NES = "NES"
-    case SNES = "SNES"
-    case Genesis = "Genesis"
-    case N64 = "N64"
+enum RomType: String, CustomStringConvertible {
+    case NES = ".nes"
+    case SNES = ".smc"
+    case Genesis = ".gen"
+    case N64 = ".z64"
     
-    var fileExtension: String {
+    var description: String {
         switch self {
-        case .NES: return ".nes"
-        case .SNES: return ".smc"
-        case .Genesis: return ".gen"
-        case .N64: return ".z64"
+        case .NES: return "NES"
+        case .SNES: return "SNES"
+        case .Genesis: return "Genesis"
+        case .N64: return "N64"
         }
     }
+    
+    init?(fromName name: String) {
+        guard let fileExtension = name.componentsSeparatedByString(".").last,
+            romType = RomType(rawValue: ".\(fileExtension)") else {
+                return nil
+        }
+        self = romType
+    }
+    
 }
 
 enum RomState {
@@ -28,14 +37,30 @@ enum RomState {
 struct ROM {
     let name: String
     let path: String
-    let type: RomType
     let state: RomState
     let region: String
-    var cleanName: String {
+    var type: RomType? {
         get {
-            var cleanName = name.stringByReplacingOccurrencesOfString("(\(region))", withString: "")
+            return RomType(fromName: name)
+        }
+    }
+    var cleanName: String {
+        // TODO: Make this less nasty... at the very least make it more performant
+        get {
+            // Unknown ROM type. just return the name
+            guard let type = type else { return name }
+
+            // strip the file extension. We'll add it back later
+            var cleanName = name.stringByReplacingOccurrencesOfString(type.rawValue, withString: "")
+            
+            // remove known codes
+            cleanName = cleanName.stringByReplacingOccurrencesOfString("(\(region))", withString: "")
             cleanName = cleanName.stringByReplacingOccurrencesOfString("[!]", withString: "")
             
+            // strip whitespace
+            cleanName = cleanName.stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceCharacterSet())
+
+            // remove extra whitespace in the middle of the name
             let c: [Character] = cleanName.characters.reduce([]) { (var all, c) in
                 if let previous = all.last where previous == " " && c == " " {
                     // the previous character is whitespace and so is this one. Skip it
@@ -44,21 +69,14 @@ struct ROM {
                 all.append(c)
                 return all
             }
-            
             cleanName = String(c)
-            cleanName = cleanName.stringByReplacingOccurrencesOfString(type.fileExtension, withString: "")
-            cleanName = cleanName.stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceCharacterSet())
-            cleanName.appendContentsOf(type.fileExtension)
+            
+            // put the file extension back on
+            cleanName.appendContentsOf(type.rawValue)
             return cleanName
         }
     }
 }
-
-let romType: RomType = .NES
-let region = "U"
-let currentPath = NSFileManager.defaultManager().currentDirectoryPath
-//print("currentPath: \(currentPath)")
-
 
 func checkName(name: String, forRegion region: String) -> RomState {
     
@@ -88,39 +106,40 @@ func checkName(name: String, forRegion region: String) -> RomState {
 }
 
 
-func lookForRoms(directory: String, logPrefix: String, var paths: [ROM]) -> [ROM] {
+func lookForRoms(directory: String, logPrefix: String) -> [ROM] {
     guard let contentsAtPath = try? NSFileManager.defaultManager().contentsOfDirectoryAtPath(directory) else {
         print("\(logPrefix)NOT A DIRECTORY: \(directory)")
-        return paths
+        return []
     }
     
     if let lastDirectoryComponent = directory.componentsSeparatedByString("/").last {
         print("\(logPrefix)Checking: \(lastDirectoryComponent)")
     }
     
-    for contentItem in contentsAtPath {
+    return contentsAtPath.reduce([]) { (var roms, contentItem) in
         let itemPath: String = "\(directory)/\(contentItem)"
         
         if let _ = try? NSFileManager.defaultManager().contentsOfDirectoryAtPath(itemPath) {
             // it's a directory, check everything in it
-            paths = lookForRoms(itemPath, logPrefix: "\(logPrefix) ", paths: paths)
-            continue
+            roms = roms + lookForRoms(itemPath, logPrefix: "\(logPrefix) ")
+            return roms
         }
-        
-        guard contentItem.hasSuffix(romType.fileExtension) else { continue }
+
+        // make sure it's a known ROM type
+        guard let _ = RomType(fromName: contentItem) else { return roms }
         
         let romState = checkName(contentItem, forRegion: region)
         if romState == .InRegion || romState == .Unknown {
-            let rom = ROM(name: contentItem, path: itemPath, type: romType, state: romState, region: region)
-            paths.append(rom)
+            let rom = ROM(name: contentItem, path: itemPath, state: romState, region: region)
+            roms.append(rom)
         }
+        
+        return roms
     }
-    
-    return paths
 }
 
-func moveRom(path: String, to toPath: String) {
-    let itemUrl = NSURL(fileURLWithPath: path)
+func moveRom(fromPath: String, to toPath: String) {
+    let itemUrl = NSURL(fileURLWithPath: fromPath)
     do {
         let destinationUrl = NSURL.fileURLWithPath(toPath, isDirectory: true)
         if let destinationName = destinationUrl.lastPathComponent {
@@ -133,41 +152,34 @@ func moveRom(path: String, to toPath: String) {
 }
 
 func createDirectory(path: String) {
+    // TODO: look for directory instead of blindly trying to create it
     do {
         let _ = try NSFileManager.defaultManager().createDirectoryAtPath(path, withIntermediateDirectories: false, attributes: nil)
         print("created directory: \(path)")
     } catch {
-        // already exists
+        // directory already exists
     }
 }
 
-print("Attempting to find all Verified Good [!] titles in region (U)")
-let roms = lookForRoms(currentPath, logPrefix: "", paths: [])
+
+/// This is where the actual script starts
+
+
+let region = "U"
+let currentPath = NSFileManager.defaultManager().currentDirectoryPath
+//print("currentPath: \(currentPath)")
+
+print("Attempting to find all Verified Good [!] titles in region (\(region))")
+let roms = lookForRoms(currentPath, logPrefix: "")
 print("")
 
 for rom in roms {
+    guard let type = rom.type else { continue } // only process known ROM types
     let directoryRegion = rom.state == .InRegion ? rom.region : "Unknown region)"
-    let directoryName = "\(rom.type.rawValue) (\(directoryRegion)) [!]"
+    let directoryName = "\(type) (\(directoryRegion)) [!]"
     let destinationPath = "\(currentPath)/\(directoryName)"
     createDirectory(destinationPath)
     moveRom(rom.path, to: "\(destinationPath)/\(rom.cleanName)")
 }
 
 print("ALL DONE")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
