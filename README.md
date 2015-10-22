@@ -11,9 +11,6 @@ When the ROM is copied, the name will be cleaned up by removing the known codes 
 2. `cd` to said directory
 3. `swift rom-cleanup.swift`
 
-### Helpful information
-[ROM file name conventions explained](https://64bitorless.wordpress.com/rom-suffix-explanations/)
-
 ### // TODO:
 * don't require changing the script, add variables to the execution
  * allow region to be passed as a variable, else process all
