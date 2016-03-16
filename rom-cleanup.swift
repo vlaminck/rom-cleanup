@@ -303,10 +303,10 @@ func lookForRoms(directory: String, logPrefix: String) -> [ROM] {
         totalRomsProcessed += 1
         if let region = rom.region where region == .U || region == .UE || region == .JU {
             // only process specific regions
-//            print("\(logPrefix)Taking: \(rom.name)")
+            print("\(logPrefix)Taking: \(rom.name)")
             roms.append(rom)
         } else {
-//            print("\(logPrefix)Skipping: \(rom.name)")
+            print("\(logPrefix)Skipping: \(rom.name)")
         }
 
         return roms
@@ -317,15 +317,15 @@ func moveRom(fromPath: String, to toPath: String) {
     let itemUrl = NSURL(fileURLWithPath: fromPath)
     do {
         let destinationUrl = NSURL.fileURLWithPath(toPath, isDirectory: true)
-//        if let destinationName = destinationUrl.lastPathComponent {
-//            print("copying \(destinationName)")
-//        }
+        if let destinationName = destinationUrl.lastPathComponent {
+            print("copying \(destinationName)")
+        }
         try NSFileManager.defaultManager().copyItemAtURL(itemUrl, toURL: destinationUrl)
         if let destinationName = destinationUrl.lastPathComponent {
             print("copyied \(destinationName)")
         }
-    } catch(let error) {
-//        print(error)
+    } catch {
+        print(error)
     }
 }
 
@@ -356,9 +356,6 @@ func removeDuplicatesByPriority(roms: [ROM]) -> [ROM] {
     let mapped: [ROM] = allSystems.flatMap { _, chunks in
         return chunks.flatMap { key, roms in
             let sortedRoms = roms.sort(<)
-            print("")
-            print(key)
-            print(sortedRoms.map({ $0.name }))
             return sortedRoms.first
         }
     }
