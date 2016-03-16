@@ -2,6 +2,39 @@
 
 import Foundation
 
+let filteredDirectoryName = "filtered"
+var totalRomsProcessed = 0
+var filteredRomCount = 0
+
+// MARK: debugging
+
+class FunctionTimer {
+    private var startDate: NSDate?
+    private var endDate: NSDate?
+    
+    init(autoStart: Bool = true) {
+        if autoStart {
+            start()
+        }
+    }
+    
+    var duration: Double? {
+        guard let startDate = startDate, endDate = endDate else { return nil }
+        return endDate.timeIntervalSinceDate(startDate)
+    }
+    
+    func start() {
+        startDate = NSDate()
+    }
+    
+    // conveniently returns the duration
+    func end() -> Double? {
+        endDate = NSDate()
+        return duration
+    }
+}
+
+
 // MARK: object declarations
 
 enum RomRegion: String {
@@ -30,6 +63,8 @@ enum RomRegion: String {
     case I  // Italy
     case H  // Holland
     case Unl// Unlicensed
+    case JU // Japan & USA
+    case UE // Europe & USA
     
     init?(fromName name: String) {
         let regionPattern = "(?<=\\()(.*?)(?=\\))" // Looking for all strings withing parenthases like "U" in the string "Metroid (U) [!].nes"
@@ -86,6 +121,19 @@ enum RomType: String, CustomStringConvertible {
     case N64 = ".z64"
     case GB = ".gb"
     case GBC = ".gbc"
+    case GBA = ".gba"
+    
+    var directoryName: String {
+        switch self {
+        case .NES: return "nes"
+        case .SNES: return "snes"
+        case .Genesis: return "megadrive"
+        case .N64: return "n64"
+        case .GB: return "gb"
+        case .GBC: return "gbc"
+        case .GBA: return "gba"
+        }
+    }
     
     var description: String {
         switch self {
@@ -95,6 +143,7 @@ enum RomType: String, CustomStringConvertible {
         case .N64: return "N64"
         case .GB: return "Gameboy"
         case .GBC: return "Gameboy Color"
+        case .GBA: return "Gameboy Advance"
         }
     }
     
@@ -110,6 +159,8 @@ enum RomType: String, CustomStringConvertible {
 
 enum RomCode: String {
     case Verified = "[!]"   // [!] Verified good dump. Thank God for these!
+    /// These don't actually work.
+    // TODO: write regex to find Fixed and Alternate versions or just make an isVerified Bool on ROM
     case Fixed = "[f]"      // [f] A fixed game has been altered in some way so that it will run better on a copier or emulator.
     case Alternate = "[a]"  // [a] This is simply an alternate version of a ROM. Many games have been re-released to fix bugs or even to eliminate Game Genie codes (Yes, Nintendo hates that device).
     // I don't care about any other type. If you do, check this out https://64bitorless.wordpress.com/rom-suffix-explanations/
@@ -138,23 +189,52 @@ func <(x: RomCode, y: RomCode) -> Bool {
 }
 
 struct ROM {
+    
+    // provided by creator
     let name: String
     let path: String
-    var region: RomRegion? {
-        return RomRegion(fromName: name)
-    }
-    var type: RomType? {
-        return RomType(fromName: name)
-    }
-    var code: RomCode? {
-        return RomCode(fromName: name)
-    }
-    var cleanName: String {
-        guard let region = region, regionRange = name.rangeOfString(region.rawValue) else {
-            // can't clean name without a known region
-            return name
+    
+    // set during initialisation during init
+    let region: RomRegion?
+    let type: RomType?
+    let cleanName: String
+    let isVerified: Bool
+    
+    init(name: String, path: String) {
+        self.name = name
+        self.path = path
+        region = RomRegion(fromName: name)
+        type = RomType(fromName: name)
+        if let r = region, regionRange = name.rangeOfString("(\(r.rawValue)") {
+            cleanName = name.substringToIndex(regionRange.startIndex).stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceCharacterSet())
+        } else {
+            cleanName = name
         }
-        return name.substringToIndex(regionRange.startIndex).stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceCharacterSet())
+        isVerified = name.containsString("[!]")
+    }
+    
+    var gbaName: String? {
+        guard let gbaType = type where gbaType == RomType.GBA else { return nil }
+
+        func matchesNumberedSystem(name: String) -> Bool {
+            let firstFour = (name as NSString).substringToIndex(4)
+            if Int(firstFour) == nil {
+                // not a number
+                return false
+            }
+            
+            return name.hasPrefix("\(firstFour) - ")
+        }
+        
+        var gbaName: String = matchesNumberedSystem(name) ? (name as NSString).substringFromIndex(7) : name
+        if let lastIndex = gbaName.characters.indexOf("(") ?? gbaName.rangeOfString(".gba")?.startIndex {
+            gbaName = gbaName.substringToIndex(lastIndex)
+        }
+        gbaName = gbaName.stringByTrimmingCharactersInSet(NSCharacterSet.whitespaceCharacterSet())
+        if let region = region {
+            gbaName = "\(gbaName) (\(region.rawValue))"
+        }
+        return "\(gbaName)\(gbaType.rawValue)"
     }
 }
 extension ROM: Comparable {}
@@ -167,8 +247,20 @@ func <(x: ROM, y: ROM) -> Bool {
         return x.name < y.name
     }
     
-    if x.code == y.code && x.region == y.region {
-        // same code and region
+    if x.isVerified && !y.isVerified {
+        return true
+    }
+    if !x.isVerified && y.isVerified {
+        return false
+    }
+    
+    // codes are essentially equivelent
+    
+    if x.region != y.region {
+        // regions are different; sort by region
+        return x.region < y.region
+    } else {
+        // same code and region; sort by name
         if x.name.characters.count == y.name.characters.count {
             // name lengths are the same. order alphabetically
             // assert "1943 (U) (PRG0) [!]" < "1943 (U) (PRG1) [!]"
@@ -176,24 +268,9 @@ func <(x: ROM, y: ROM) -> Bool {
         }
         
         // name lengths are not the same, order by suffix simplicity
-        // assert "1943 (U) [!]" < "1943 (U) [f][!]"
+        // assert "1943 (U) [!]" < "1943 (U) [f1][!]"
         return x.name.characters.count < y.name.characters.count
     }
-    
-    if x.code == y.code {
-        // code is the same, order by region
-        return x.region < y.region
-    }
-    
-    // codes are not equal, order by code
-    if x.code == nil {
-        return false
-    }
-    if y.code == nil {
-        return true
-    }
-    
-    return x.code < y.code
 }
 
 // MARK: function declarations
@@ -206,6 +283,10 @@ func lookForRoms(directory: String, logPrefix: String) -> [ROM] {
     }
     
     if let lastDirectoryComponent = directory.componentsSeparatedByString("/").last {
+        if lastDirectoryComponent == filteredDirectoryName {
+            print("\(logPrefix)Skipping: \(filteredDirectoryName)")
+            return []
+        }
         print("\(logPrefix)Checking: \(lastDirectoryComponent)")
     }
     
@@ -219,11 +300,15 @@ func lookForRoms(directory: String, logPrefix: String) -> [ROM] {
         }
 
         let rom = ROM(name: contentItem, path: itemPath)
-        if let _ = rom.code {
-            // only process specific codes
+        totalRomsProcessed += 1
+        if let region = rom.region where region == .U || region == .UE || region == .JU {
+            // only process specific regions
+//            print("\(logPrefix)Taking: \(rom.name)")
             roms.append(rom)
+        } else {
+//            print("\(logPrefix)Skipping: \(rom.name)")
         }
-        
+
         return roms
     }
 }
@@ -232,12 +317,15 @@ func moveRom(fromPath: String, to toPath: String) {
     let itemUrl = NSURL(fileURLWithPath: fromPath)
     do {
         let destinationUrl = NSURL.fileURLWithPath(toPath, isDirectory: true)
-        if let destinationName = destinationUrl.lastPathComponent {
-            print("copying \(destinationName)")
-        }
+//        if let destinationName = destinationUrl.lastPathComponent {
+//            print("copying \(destinationName)")
+//        }
         try NSFileManager.defaultManager().copyItemAtURL(itemUrl, toURL: destinationUrl)
+        if let destinationName = destinationUrl.lastPathComponent {
+            print("copyied \(destinationName)")
+        }
     } catch(let error) {
-        print(error)
+//        print(error)
     }
 }
 
@@ -252,21 +340,45 @@ func createDirectory(path: String) {
 }
 
 func removeDuplicatesByPriority(roms: [ROM]) -> [ROM] {
-    return roms.reduce([String: [ROM]]()) { (var all: [String: [ROM]], current: ROM) in
-        if var existingRoms = all[current.cleanName] {
-            existingRoms.append(current)
-            all[current.cleanName] = existingRoms
-        } else {
-            all[current.cleanName] = [current]
+    var allSystems: [RomType: [String: [ROM]]] = [:]
+    for rom in roms {
+        guard let type = rom.type else {
+            print("skipping rom with unknown type: \(rom)")
+            continue
         }
-        return all
-        }.map { _, roms in
-            return roms.sort(<).first
-        }.flatMap { $0 }
+        
+        var chunked: [String: [ROM]] = allSystems[type] ?? [:]
+        var existingRoms:[ROM] = chunked[rom.cleanName] ?? []
+        existingRoms.append(rom)
+        chunked[rom.cleanName] = existingRoms
+        allSystems[type] = chunked
+    }
+    let mapped: [ROM] = allSystems.flatMap { _, chunks in
+        return chunks.flatMap { key, roms in
+            let sortedRoms = roms.sort(<)
+            print("")
+            print(key)
+            print(sortedRoms.map({ $0.name }))
+            return sortedRoms.first
+        }
+    }
+    return mapped
 }
 
-
 // MARK: This is where the actual script starts
+
+func input() -> String? {
+    let keyboard = NSFileHandle.fileHandleWithStandardInput()
+    let inputData = keyboard.availableData
+    return NSString(data: inputData, encoding: NSUTF8StringEncoding) as? String
+}
+
+print("Separate by region? (y/n): ")
+let userInput = input()
+let separateByRegion = userInput?.lowercaseString.hasPrefix("y") ?? false
+
+
+var totalTime = FunctionTimer()
 
 
 let currentPath = NSFileManager.defaultManager().currentDirectoryPath
@@ -277,21 +389,35 @@ let foundRoms = lookForRoms(currentPath, logPrefix: "")
 let roms = removeDuplicatesByPriority(foundRoms).sort(<)
 print("")
 
-let filteredDirectoryName = "filtered"
 createDirectory("\(currentPath)/\(filteredDirectoryName)")
 
 for rom in roms {
     guard let type = rom.type else {
         // only process known ROM types
+        print("NOT copying \(rom.name); unknown type: \(rom.type)")
         continue
     }
-    guard let code = rom.code else {
-        // only process roms that have codes that we care about
-        continue
-    }
-    let destinationPath = "\(currentPath)/\(filteredDirectoryName)/\(type)"
+    
+    let destinationPath = "\(currentPath)/\(filteredDirectoryName)/\(type.directoryName)"
     createDirectory(destinationPath)
-    moveRom(rom.path, to: "\(destinationPath)/\(rom.name)")
+    
+    let fileName = rom.gbaName ?? rom.name
+
+    if (separateByRegion) {
+        let regionDirectory = rom.region?.rawValue ?? "_unknown_region"
+        let regionPath = "\(destinationPath)/\(regionDirectory)"
+        createDirectory(regionPath)
+        moveRom(rom.path, to: "\(regionPath)/\(fileName)")
+        filteredRomCount += 1
+    } else {
+        moveRom(rom.path, to: "\(destinationPath)/\(fileName)")
+        filteredRomCount += 1
+    }
+    
 }
 
-print("ALL DONE")
+print("ALL DONE!")
+print("checked \(totalRomsProcessed) ROMs, and copied \(filteredRomCount) ROMs.")
+if let duration = totalTime.end() {
+    print("total processing time took \(duration) seconds")
+}
